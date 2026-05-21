@@ -11,16 +11,17 @@ RUN apt-get update && apt-get install -y \
        >> /etc/apt/sources.list.d/google.list \
     && apt-get update \
     && apt-get install -y google-chrome-stable --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g pnpm
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 ENV NODE_ENV=production
 
 WORKDIR /usr/src/app
-COPY package*.json ./
-RUN npm ci --only=production
+COPY package.json ./
+RUN pnpm install --prod
 COPY . .
 
 EXPOSE 3000
-CMD ["npm", "start"]
+CMD ["node", "index.js"]
