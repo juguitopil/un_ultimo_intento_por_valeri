@@ -9,10 +9,8 @@ const PORT = process.env.PORT || 3000;
 const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
 
 app.use(express.json());
-app.use(cors({
-  origin: '*', // Ajustar al dominio de InfinityFree si se quiere mas seguridad
-  methods: ['GET', 'POST'],
-}));
+app.use(cors({ origin: '*' }));
+app.options('*', cors());
 
 // ── Salud del servidor ──
 app.get('/', (req, res) => {
