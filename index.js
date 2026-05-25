@@ -72,7 +72,7 @@ app.post('/api/verificar', async (req, res) => {
     await page.click('#password');
     await page.type('#password', password, { delay: 30 });
 
-    // Use page-level response event to capture the AJAX response
+    // Capture AJAX response via passive page-level event listener
     // This avoids "Navigating frame was detached" from waitForResponse
     let ajaxBody = null;
     function onResponse(resp) {
@@ -83,16 +83,23 @@ app.post('/api/verificar', async (req, res) => {
     page.on('response', onResponse);
 
     // Click login button
-    await page.click('#login');
+    await page.click('#login').catch(() => {});
 
     // Wait for AJAX response or possible navigation redirect
     await new Promise(resolve => setTimeout(resolve, 6000));
 
     page.off('response', onResponse);
 
-    // Check current URL
-    const currentUrl = page.url();
-    const pageContent = await page.content().catch(() => '');
+    // Try to read page state — navigation may have detached the frame
+    let currentUrl = '';
+    let pageContent = '';
+    try {
+      currentUrl = page.url();
+      pageContent = await page.content();
+    } catch (e) {
+      // Frame detached = navigation happened = login succeeded
+      currentUrl = '__DETACHED__';
+    }
 
     const loginUrl = 'default.php';
     const errorKeywords = [
@@ -103,22 +110,24 @@ app.post('/api/verificar', async (req, res) => {
     let valid = false;
     let reason = '';
 
-    // 1. If URL changed away from login page → success (redirect)
-    if (!currentUrl.includes(loginUrl)) {
-      valid = true;
-      reason = 'URL cambio a: ' + currentUrl;
-    }
-    // 2. If AJAX response says "Error:" → invalid
-    else if (ajaxBody && ajaxBody.toLowerCase().includes('error')) {
+    // 1. AJAX body says "Error:" → credentials rejected
+    if (ajaxBody && ajaxBody.toLowerCase().includes('error')) {
       valid = false;
       reason = 'AJAX: ' + ajaxBody.substring(0, 80);
     }
-    // 3. Check for error text in page
+    // 2. Frame detached or URL changed → navigation happened → login accepted
+    else if (currentUrl === '__DETACHED__' || !currentUrl.includes(loginUrl)) {
+      valid = true;
+      reason = currentUrl === '__DETACHED__'
+        ? 'Login exitoso (redireccion detectada)'
+        : 'URL cambio a: ' + currentUrl;
+    }
+    // 3. Error keywords visible on page
     else if (errorKeywords.some(kw => pageContent.toLowerCase().includes(kw))) {
       valid = false;
       reason = 'Pagina de error detectada';
     }
-    // 4. Check for logged-in elements
+    // 4. Look for logged-in indicator elements
     else {
       const loggedInSelectors = [
         '.navbar-nav', '.profile', '.bienvenido',
