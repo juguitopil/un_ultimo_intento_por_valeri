@@ -18,32 +18,7 @@ function md5Hash(password) {
   return crypto.createHash('md5').update(password).digest('hex').substring(0, 8);
 }
 
-function httpsGet(urlPath) {
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: 'perfil.uagrm.edu.bo',
-      path: urlPath,
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    };
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => data += chunk);
-      res.on('end', () => resolve({
-        status: res.statusCode,
-        headers: res.headers,
-        body: data
-      }));
-    });
-    req.on('error', reject);
-    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Timeout')); });
-    req.end();
-  });
-}
-
-function httpsPost(urlPath, body, sessionId) {
+function httpsPost(urlPath, body) {
   return new Promise((resolve, reject) => {
     const options = {
       hostname: 'perfil.uagrm.edu.bo',
@@ -58,9 +33,6 @@ function httpsPost(urlPath, body, sessionId) {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     };
-    if (sessionId) {
-      options.headers['Cookie'] = 'PHPSESSID=' + sessionId;
-    }
     const req = https.request(options, (res) => {
       let data = '';
       res.on('data', (chunk) => data += chunk);
@@ -77,17 +49,6 @@ function httpsPost(urlPath, body, sessionId) {
   });
 }
 
-function extractSessionId(headers) {
-  const setCookie = headers['set-cookie'];
-  if (!setCookie) return '';
-  const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
-  for (const c of cookies) {
-    const match = c.match(/PHPSESSID=([^;]+)/);
-    if (match) return match[1];
-  }
-  return '';
-}
-
 app.post('/api/verificar', async (req, res) => {
   const { username, password } = req.body;
 
@@ -96,27 +57,12 @@ app.post('/api/verificar', async (req, res) => {
   }
 
   try {
-    // Step 1: Get session from portal
-    const loginPage = await httpsGet('/estudiantes/default.php');
-    const sessionId = extractSessionId(loginPage.headers);
-
-    if (!sessionId) {
-      return res.json({
-        valid: false,
-        error: 'No se pudo obtener sesion del portal',
-        debug: {
-          httpStatus: loginPage.status,
-          setCookie: loginPage.headers['set-cookie'] || '(none)'
-        }
-      });
-    }
-
-    // Step 2: Compute password hash (same as portal: substr(md5(password), 0, 8))
+    // Compute password hash (same as portal: substr(md5(password), 0, 8))
     const passwordHash = md5Hash(password);
 
-    // Step 3: POST to AJAX endpoint with session
+    // POST directly to verif_est.php (no session needed — endpoint creates one)
     const postBody = `username=${encodeURIComponent(username)}&password=${passwordHash}`;
-    const result = await httpsPost('/estudiantes/verif_est.php', postBody, sessionId);
+    const result = await httpsPost('/estudiantes/verif_est.php', postBody);
 
     let valid = false;
     let reason = '';
@@ -136,11 +82,10 @@ app.post('/api/verificar', async (req, res) => {
       valid,
       reason,
       debug: {
-        sessionId,
         passwordHash,
-        getStatus: loginPage.status,
-        postStatus: result.status,
-        postBody: (result.body || '').substring(0, 150)
+        httpStatus: result.status,
+        setCookie: result.headers['set-cookie'] || '(none)',
+        responseBody: (result.body || '').substring(0, 200)
       }
     });
 
