@@ -57,31 +57,42 @@ app.post('/api/verificar', async (req, res) => {
 
     // Go to login page
     await page.goto('https://perfil.uagrm.edu.bo/estudiantes/default.php', {
-      waitUntil: 'domcontentloaded',
+      waitUntil: 'load',
       timeout: 30000
     });
 
-    // Wait for page to settle (portal may auto-redirect after load)
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // Check current URL (portal may auto-redirect)
+    let redirectUrl = '';
+    try { redirectUrl = page.url(); } catch (e) { redirectUrl = '__DETACHED__'; }
 
-    // Check if still on login page
-    const currentUrl = page.url();
-    if (!currentUrl.includes('default.php')) {
+    if (!redirectUrl.includes('default.php')) {
+      // Portal redirected away from login page — can't proceed
       await browser.close();
-      return res.json({ valid: false, error: 'Redireccion inesperada a: ' + currentUrl });
+      return res.json({
+        valid: false,
+        error: 'El portal redirigio a: ' + redirectUrl + '. No se puede verificar.'
+      });
     }
 
-    // Fill credentials using page.type
+    // Fill credentials
     await page.waitForSelector('#username', { timeout: 10000 });
     await page.click('#username');
     await page.type('#username', username, { delay: 20 });
     await page.click('#password');
     await page.type('#password', password, { delay: 20 });
 
+    // Wait a moment for portal JS to register input events
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     // Capture AJAX response by intercepting fetch AND XHR inside the browser
-    const ajaxResult = await page.evaluate(async () => {
+    let ajaxResult = { status: 0, body: '__EVALUATE_FAILED__' };
+    try {
+      ajaxResult = await page.evaluate(async () => {
       return new Promise((resolve) => {
+        let restored = false;
         function restore() {
+          if (restored) return;
+          restored = true;
           window.fetch = origFetch;
           window.XMLHttpRequest = origXHR;
         }
@@ -123,6 +134,9 @@ app.post('/api/verificar', async (req, res) => {
         }, 15000);
       });
     });
+    } catch (e) {
+      ajaxResult = { status: 0, body: '__EVALUATE_ERROR__:' + e.message.substring(0, 80) };
+    }
 
     const errorKeywords = [
       'incorrecta', 'invalida', 'error', 'bloqueada',
