@@ -71,13 +71,28 @@ app.post('/api/verificar', async (req, res) => {
       reason = 'HTTP ' + result.status + ' Body: ' + (result.body || '').substring(0, 100);
     }
 
+    // Extract PHPSESSID from response for auto-login
+    let sessionId = '';
+    const setCookie = result.headers['set-cookie'];
+    if (setCookie) {
+      const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
+      for (const c of cookies) {
+        const match = c.match(/PHPSESSID=([a-zA-Z0-9]+)/);
+        if (match && !match[1].includes('deleted')) {
+          sessionId = match[1];
+          break;
+        }
+      }
+    }
+
     return res.json({
       valid,
       reason,
+      sessionId: valid ? sessionId : '',
       debug: {
         httpStatus: result.status,
         setCookie: result.headers['set-cookie'] || '(none)',
-        passwordSent: password.substring(0, 3) + '***' + password.slice(-3),
+        sessionId,
         responseBody: (result.body || '').substring(0, 200)
       }
     });
