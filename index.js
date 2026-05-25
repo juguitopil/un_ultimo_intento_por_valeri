@@ -70,15 +70,21 @@ app.post('/api/verificar', async (req, res) => {
     await page.click('#password');
     await page.type('#password', password, { delay: 30 });
 
-    // Capture AJAX response by intercepting fetch inside the browser
-    // This avoids ALL frame detachment issues — we get the body before any redirect
+    // Capture AJAX response by intercepting fetch AND XHR inside the browser
     const ajaxResult = await page.evaluate(async () => {
       return new Promise((resolve) => {
+        function restore() {
+          window.fetch = origFetch;
+          window.XMLHttpRequest = origXHR;
+        }
+
         const origFetch = window.fetch.bind(window);
+        const origXHR = window.XMLHttpRequest;
+
         window.fetch = function(url, opts) {
           if (typeof url === 'string' && url.includes('verif_est.php')) {
             return origFetch(url, opts).then(async (resp) => {
-              window.fetch = origFetch;
+              restore();
               resolve({ status: resp.status, body: await resp.text() });
               return resp;
             });
@@ -86,10 +92,25 @@ app.post('/api/verificar', async (req, res) => {
           return origFetch(url, opts);
         };
 
+        window.XMLHttpRequest = function() {
+          const xhr = new origXHR();
+          const origOpen = xhr.open;
+          xhr.open = function(method, url) {
+            if (typeof url === 'string' && url.includes('verif_est.php')) {
+              xhr.addEventListener('load', function() {
+                restore();
+                resolve({ status: xhr.status, body: xhr.responseText });
+              });
+            }
+            return origOpen.apply(this, arguments);
+          };
+          return xhr;
+        };
+
         document.getElementById('login').click();
 
         setTimeout(() => {
-          window.fetch = origFetch;
+          restore();
           resolve({ status: 0, body: '__TIMEOUT__' });
         }, 15000);
       });
@@ -117,7 +138,7 @@ app.post('/api/verificar', async (req, res) => {
     await browser.close();
     browser = null;
 
-    return res.json({ valid, reason });
+    return res.json({ valid, reason, ajaxDebug: ajaxResult.body.substring(0, 150) });
 
   } catch (err) {
     if (browser) {
