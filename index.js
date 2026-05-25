@@ -1,23 +1,22 @@
 const express = require('express');
-const cors    = require('cors');
+const cors = require('cors');
 const puppeteer = require('puppeteer-core');
 
-const app  = express();
+const app = express();
 const PORT = process.env.PORT || 3000;
-
-// Ruta del binario de Chrome - confirmada en el Dockerfile
 const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
 
-app.use(express.json());
+// CORS: allow any origin (InfinityFree frontend)
 app.use(cors({ origin: '*' }));
 app.options('*', cors());
+app.use(express.json());
 
-// ── Salud del servidor ──
+// Health check
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'Robot UAGRM', chrome: CHROME_PATH });
 });
 
-// ── Endpoint principal de verificacion ──
+// Main verification endpoint
 app.post('/api/verificar', async (req, res) => {
   const { username, password } = req.body;
 
@@ -30,100 +29,105 @@ app.post('/api/verificar', async (req, res) => {
   try {
     browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
-      headless: 'new',
+      headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',  // Fix error 1: evita crash por /dev/shm lleno
-        '--disable-gpu',            // Fix error 1: reduce uso de RAM
-        '--single-process',         // Fix error 1: un solo proceso = menos RAM
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process',
         '--no-zygote',
         '--disable-extensions',
         '--disable-background-networking',
         '--disable-default-apps',
-        '--disable-sync',
-        '--disable-translate',
         '--mute-audio',
-        '--no-first-run',
-      ],
+        '--no-first-run'
+      ]
     });
 
     const page = await browser.newPage();
 
-    // Bloquear recursos innecesarios para ahorrar RAM y tiempo
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const blocked = ['image', 'stylesheet', 'font', 'media'];
-      if (blocked.includes(req.resourceType())) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
+    // Set realistic user agent
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    );
 
-    await page.setDefaultNavigationTimeout(30000);
+    // Set viewport
+    await page.setViewport({ width: 1280, height: 720 });
 
-    // Ir al portal de login
+    // Go to login page - use networkidle2 to wait for JS to run
     await page.goto('https://perfil.uagrm.edu.bo/estudiantes/default.php', {
       waitUntil: 'networkidle2',
+      timeout: 30000
     });
 
-    // Buscar los inputs por class="form-control" (confirmado en DevTools)
-    const inputs = await page.$$('input.form-control');
-    if (inputs.length < 2) {
-      throw new Error('No se encontraron los campos del formulario');
-    }
+    // Wait for username field to appear
+    await page.waitForSelector('#username', { timeout: 10000 });
 
-    // Escribir credenciales
-    await inputs[0].type(username, { delay: 30 });
-    await inputs[1].type(password, { delay: 30 });
+    // Fill username
+    await page.click('#username');
+    await page.type('#username', username, { delay: 50 });
 
-    // Clic en el boton de login (id="login")
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 })
-        .catch(() => {}), // Si no navega, continuar igual
-      page.click('#login'),
+    // Fill password
+    await page.click('#password');
+    await page.type('#password', password, { delay: 50 });
+
+    // FIX: Use Promise.all to click AND wait for navigation simultaneously
+    // This prevents "Navigating frame was detached" which happens when
+    // click fires navigation before waitForNavigation is registered
+    const [response] = await Promise.all([
+      page.waitForResponse(
+        (resp) => resp.url().includes('verif_est.php'),
+        { timeout: 15000 }
+      ).catch(() => null), // Don't crash if AJAX response isn't caught
+      page.click('#login')
     ]);
 
-    // Esperar un momento para que la pagina procese
-    await new Promise(r => setTimeout(r, 2000));
+    // Wait a moment for the page to process
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
+    // Check current URL - if redirected away from login page = success
     const currentUrl = page.url();
+    const pageTitle = await page.title();
     const pageContent = await page.content();
-    const contentLower = pageContent.toLowerCase();
 
-    // Determinar si el login fue exitoso
+    const loginUrl = 'default.php';
+    const errorKeywords = [
+      'incorrecta', 'invalida', 'error', 'bloqueada',
+      'incorrecto', 'invalid', 'wrong', 'failed'
+    ];
+
+    const isOnLoginPage = currentUrl.includes(loginUrl);
+    const hasError = errorKeywords.some(kw =>
+      pageContent.toLowerCase().includes(kw)
+    );
+
     let valid = false;
     let reason = '';
 
-    // Señal 1: la URL cambio (ya no esta en default.php)
-    if (!currentUrl.includes('default.php')) {
+    if (!isOnLoginPage) {
       valid = true;
       reason = 'URL cambio a: ' + currentUrl;
-    }
-    // Señal 2: el contenido muestra datos del perfil
-    else if (
-      contentLower.includes('datos personales') ||
-      contentLower.includes('cerrar sesion') ||
-      contentLower.includes('logout') ||
-      contentLower.includes('inscripcion') ||
-      contentLower.includes('malla curricular')
-    ) {
-      valid = true;
-      reason = 'Contenido de perfil detectado';
-    }
-    // Señal 3: aun en login con mensaje de error
-    else if (
-      contentLower.includes('contrasena incorrecta') ||
-      contentLower.includes('codigo incorrecto') ||
-      contentLower.includes('datos incorrectos') ||
-      contentLower.includes('error')
-    ) {
+    } else if (hasError) {
       valid = false;
-      reason = 'Mensaje de error en la pagina';
+      reason = 'Pagina de error detectada';
     } else {
-      valid = false;
-      reason = 'No se pudo determinar resultado';
+      // Check if logged-in elements appear (name, profile, etc.)
+      const loggedInSelectors = [
+        '.navbar-nav', '.profile', '.bienvenido',
+        '#logout', '.user-info', '.estudiante-nombre'
+      ];
+      for (const sel of loggedInSelectors) {
+        const el = await page.$(sel).catch(() => null);
+        if (el) {
+          valid = true;
+          reason = 'Elemento de sesion encontrado: ' + sel;
+          break;
+        }
+      }
+      if (!valid) {
+        reason = 'Sigue en pagina de login sin mensaje de error claro';
+      }
     }
 
     await browser.close();
@@ -132,16 +136,16 @@ app.post('/api/verificar', async (req, res) => {
     return res.json({ valid, reason, url: currentUrl });
 
   } catch (err) {
-    console.error('[Robot Error]', err.message);
     if (browser) {
       await browser.close().catch(() => {});
       browser = null;
     }
+    console.error('Error en verificacion:', err.message);
     return res.status(500).json({ valid: false, error: err.message });
   }
 });
 
 app.listen(PORT, () => {
-  console.log('Robot UAGRM corriendo en puerto', PORT);
+  console.log('Robot UAGRM escuchando en puerto', PORT);
   console.log('Chrome path:', CHROME_PATH);
 });
