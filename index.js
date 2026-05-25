@@ -55,14 +55,14 @@ app.post('/api/verificar', async (req, res) => {
     // Set viewport
     await page.setViewport({ width: 1280, height: 720 });
 
-    // Go to login page - wait for DOM content (faster than networkidle2)
+    // Go to login page
     await page.goto('https://perfil.uagrm.edu.bo/estudiantes/default.php', {
-      waitUntil: 'domcontentloaded',
+      waitUntil: 'load',
       timeout: 45000
     });
 
-    // Wait for username field (longer timeout for slow portals)
-    await page.waitForSelector('#username', { timeout: 20000 });
+    // Wait for username field
+    await page.waitForSelector('#username', { timeout: 15000 });
 
     // Fill credentials using page.type (triggers proper input events)
     await page.click('#username');
