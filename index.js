@@ -61,47 +61,40 @@ app.post('/api/verificar', async (req, res) => {
       timeout: 30000
     });
 
-    // Wait for username field to appear
+    // Wait for username field
     await page.waitForSelector('#username', { timeout: 10000 });
 
-    // Fill username
-    await page.click('#username');
-    await page.type('#username', username, { delay: 30 });
+    // Fill credentials via page.evaluate (avoids frame issues with type())
+    await page.evaluate((user, pass) => {
+      document.getElementById('username').value = user;
+      document.getElementById('password').value = pass;
+    }, username, password);
 
-    // Fill password
-    await page.click('#password');
-    await page.type('#password', password, { delay: 30 });
+    // Capture AJAX response by intercepting fetch inside the browser
+    // This avoids ALL frame detachment issues — we get the body before any redirect
+    const ajaxResult = await page.evaluate(async () => {
+      return new Promise((resolve) => {
+        const origFetch = window.fetch.bind(window);
+        window.fetch = function(url, opts) {
+          if (typeof url === 'string' && url.includes('verif_est.php')) {
+            return origFetch(url, opts).then(async (resp) => {
+              window.fetch = origFetch;
+              resolve({ status: resp.status, body: await resp.text() });
+              return resp;
+            });
+          }
+          return origFetch(url, opts);
+        };
 
-    // Capture AJAX response via passive page-level event listener
-    // This avoids "Navigating frame was detached" from waitForResponse
-    let ajaxBody = null;
-    function onResponse(resp) {
-      if (resp.url().includes('verif_est.php')) {
-        resp.text().then(t => { ajaxBody = t; }).catch(() => {});
-      }
-    }
-    page.on('response', onResponse);
+        document.getElementById('login').click();
 
-    // Click login button
-    await page.click('#login').catch(() => {});
+        setTimeout(() => {
+          window.fetch = origFetch;
+          resolve({ status: 0, body: '__TIMEOUT__' });
+        }, 15000);
+      });
+    });
 
-    // Wait for AJAX response or possible navigation redirect
-    await new Promise(resolve => setTimeout(resolve, 6000));
-
-    page.off('response', onResponse);
-
-    // Try to read page state — navigation may have detached the frame
-    let currentUrl = '';
-    let pageContent = '';
-    try {
-      currentUrl = page.url();
-      pageContent = await page.content();
-    } catch (e) {
-      // Frame detached = navigation happened = login succeeded
-      currentUrl = '__DETACHED__';
-    }
-
-    const loginUrl = 'default.php';
     const errorKeywords = [
       'incorrecta', 'invalida', 'error', 'bloqueada',
       'incorrecto', 'invalid', 'wrong', 'failed'
@@ -110,48 +103,21 @@ app.post('/api/verificar', async (req, res) => {
     let valid = false;
     let reason = '';
 
-    // 1. AJAX body says "Error:" → credentials rejected
-    if (ajaxBody && ajaxBody.toLowerCase().includes('error')) {
+    if (ajaxResult.body === '__TIMEOUT__') {
       valid = false;
-      reason = 'AJAX: ' + ajaxBody.substring(0, 80);
-    }
-    // 2. Frame detached or URL changed → navigation happened → login accepted
-    else if (currentUrl === '__DETACHED__' || !currentUrl.includes(loginUrl)) {
+      reason = 'Timeout — el portal UAGRM no respondio';
+    } else if (ajaxResult.body.toLowerCase().includes('error')) {
+      valid = false;
+      reason = ajaxResult.body.substring(0, 80);
+    } else {
       valid = true;
-      reason = currentUrl === '__DETACHED__'
-        ? 'Login exitoso (redireccion detectada)'
-        : 'URL cambio a: ' + currentUrl;
-    }
-    // 3. Error keywords visible on page
-    else if (errorKeywords.some(kw => pageContent.toLowerCase().includes(kw))) {
-      valid = false;
-      reason = 'Pagina de error detectada';
-    }
-    // 4. Look for logged-in indicator elements
-    else {
-      const loggedInSelectors = [
-        '.navbar-nav', '.profile', '.bienvenido',
-        '#logout', '.user-info', '.estudiante-nombre'
-      ];
-      for (const sel of loggedInSelectors) {
-        const el = await page.$(sel).catch(() => null);
-        if (el) {
-          valid = true;
-          reason = 'Elemento de sesion encontrado: ' + sel;
-          break;
-        }
-      }
-      if (!valid) {
-        reason = ajaxBody
-          ? 'Respuesta AJAX: ' + ajaxBody.substring(0, 80)
-          : 'Sigue en login sin mensaje de error claro';
-      }
+      reason = 'Login aceptado por el portal';
     }
 
     await browser.close();
     browser = null;
 
-    return res.json({ valid, reason, url: currentUrl });
+    return res.json({ valid, reason });
 
   } catch (err) {
     if (browser) {
