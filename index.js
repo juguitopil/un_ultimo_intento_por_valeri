@@ -1,22 +1,54 @@
 const express = require('express');
 const cors = require('cors');
+const https = require('https');
+const crypto = require('crypto');
 const puppeteer = require('puppeteer-core');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const CHROME_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
 
-// CORS: allow any origin (InfinityFree frontend)
 app.use(cors({ origin: '*' }));
 app.options('*', cors());
 app.use(express.json());
 
-// Health check
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'Robot UAGRM', chrome: CHROME_PATH });
 });
 
-// Main verification endpoint
+function md5Hash(password) {
+  return crypto.createHash('md5').update(password).digest('hex').substring(0, 8);
+}
+
+function postToUagrm(sessionId, username, passwordHash) {
+  return new Promise((resolve, reject) => {
+    const body = `username=${encodeURIComponent(username)}&password=${passwordHash}`;
+    const options = {
+      hostname: 'perfil.uagrm.edu.bo',
+      path: '/estudiantes/verif_est.php',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Content-Length': Buffer.byteLength(body),
+        'Cookie': 'PHPSESSID=' + sessionId,
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': 'https://perfil.uagrm.edu.bo/estudiantes/default.php',
+        'Origin': 'https://perfil.uagrm.edu.bo',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 app.post('/api/verificar', async (req, res) => {
   const { username, password } = req.body;
 
@@ -31,143 +63,68 @@ app.post('/api/verificar', async (req, res) => {
       executablePath: CHROME_PATH,
       headless: true,
       args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--single-process',
-        '--no-zygote',
-        '--disable-extensions',
-        '--disable-background-networking',
-        '--disable-default-apps',
-        '--mute-audio',
-        '--no-first-run'
+        '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+        '--disable-gpu', '--single-process', '--no-zygote',
+        '--disable-extensions', '--disable-background-networking',
+        '--disable-default-apps', '--mute-audio', '--no-first-run'
       ]
     });
 
     const page = await browser.newPage();
-
-    // Set realistic user agent
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
-    // Set viewport
-    await page.setViewport({ width: 1280, height: 720 });
-
-    // Go to login page
+    // Visit portal to get PHPSESSID cookie
     await page.goto('https://perfil.uagrm.edu.bo/estudiantes/default.php', {
-      waitUntil: 'load',
-      timeout: 30000
+      waitUntil: 'domcontentloaded',
+      timeout: 20000
     });
 
-    // Check current URL (portal may auto-redirect)
-    let redirectUrl = '';
-    try { redirectUrl = page.url(); } catch (e) { redirectUrl = '__DETACHED__'; }
+    // Extract PHPSESSID from cookies
+    const cookies = await page.cookies();
+    const sessionCookie = cookies.find(c => c.name === 'PHPSESSID');
+    const sessionId = sessionCookie ? sessionCookie.value : '';
 
-    if (!redirectUrl.includes('default.php')) {
-      // Portal redirected away from login page — can't proceed
+    if (!sessionId) {
       await browser.close();
-      return res.json({
-        valid: false,
-        error: 'El portal redirigio a: ' + redirectUrl + '. No se puede verificar.'
-      });
-    }
-
-    // Fill credentials
-    await page.waitForSelector('#username', { timeout: 10000 });
-    await page.click('#username');
-    await page.type('#username', username, { delay: 20 });
-    await page.click('#password');
-    await page.type('#password', password, { delay: 20 });
-
-    // Wait a moment for portal JS to register input events
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // Capture AJAX response by intercepting fetch AND XHR inside the browser
-    let ajaxResult = { status: 0, body: '__EVALUATE_FAILED__' };
-    try {
-      ajaxResult = await page.evaluate(async () => {
-      return new Promise((resolve) => {
-        let restored = false;
-        function restore() {
-          if (restored) return;
-          restored = true;
-          window.fetch = origFetch;
-          window.XMLHttpRequest = origXHR;
-        }
-
-        const origFetch = window.fetch.bind(window);
-        const origXHR = window.XMLHttpRequest;
-
-        window.fetch = function(url, opts) {
-          if (typeof url === 'string' && url.includes('verif_est.php')) {
-            return origFetch(url, opts).then(async (resp) => {
-              restore();
-              resolve({ status: resp.status, body: await resp.text() });
-              return resp;
-            });
-          }
-          return origFetch(url, opts);
-        };
-
-        window.XMLHttpRequest = function() {
-          const xhr = new origXHR();
-          const origOpen = xhr.open;
-          xhr.open = function(method, url) {
-            if (typeof url === 'string' && url.includes('verif_est.php')) {
-              xhr.addEventListener('load', function() {
-                restore();
-                resolve({ status: xhr.status, body: xhr.responseText });
-              });
-            }
-            return origOpen.apply(this, arguments);
-          };
-          return xhr;
-        };
-
-        document.getElementById('login').click();
-
-        setTimeout(() => {
-          restore();
-          resolve({ status: 0, body: '__TIMEOUT__' });
-        }, 15000);
-      });
-    });
-    } catch (e) {
-      ajaxResult = { status: 0, body: '__EVALUATE_ERROR__:' + e.message.substring(0, 80) };
-    }
-
-    const errorKeywords = [
-      'incorrecta', 'invalida', 'error', 'bloqueada',
-      'incorrecto', 'invalid', 'wrong', 'failed'
-    ];
-
-    let valid = false;
-    let reason = '';
-
-    if (ajaxResult.body === '__TIMEOUT__') {
-      valid = false;
-      reason = 'Timeout — el portal UAGRM no respondio';
-    } else if (ajaxResult.body.toLowerCase().includes('error')) {
-      valid = false;
-      reason = ajaxResult.body.substring(0, 80);
-    } else {
-      valid = true;
-      reason = 'Login aceptado por el portal';
+      return res.json({ valid: false, error: 'No se pudo obtener sesion del portal', debug: { cookies } });
     }
 
     await browser.close();
     browser = null;
 
-    return res.json({ valid, reason, ajaxDebug: ajaxResult.body.substring(0, 150) });
+    // Compute password hash (same as portal: substr(md5(password), 0, 8))
+    const passwordHash = md5Hash(password);
+
+    // Make direct POST to verif_est.php with session cookie
+    const result = await postToUagrm(sessionId, username, passwordHash);
+
+    let valid = false;
+    let reason = '';
+
+    if (result.status === 401) {
+      valid = false;
+      reason = 'Sesion rechazada (401)';
+    } else if (result.body && result.body.toLowerCase().includes('error')) {
+      valid = false;
+      reason = result.body.substring(0, 80);
+    } else if (result.status === 200 && result.body && result.body.length > 0) {
+      valid = true;
+      reason = 'Login aceptado';
+    } else {
+      valid = false;
+      reason = 'Respuesta inesperada: HTTP ' + result.status + ' Body: ' + (result.body || '').substring(0, 80);
+    }
+
+    return res.json({ valid, reason, debug: { sessionId, passwordHash, httpStatus: result.status, bodyPreview: (result.body || '').substring(0, 120) } });
 
   } catch (err) {
     if (browser) {
       await browser.close().catch(() => {});
       browser = null;
     }
-    console.error('Error en verificacion:', err.message);
+    console.error('Error:', err.message);
     return res.status(500).json({ valid: false, error: err.message });
   }
 });
