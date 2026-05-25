@@ -57,18 +57,26 @@ app.post('/api/verificar', async (req, res) => {
 
     // Go to login page
     await page.goto('https://perfil.uagrm.edu.bo/estudiantes/default.php', {
-      waitUntil: 'load',
-      timeout: 45000
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
     });
 
-    // Wait for username field
-    await page.waitForSelector('#username', { timeout: 15000 });
+    // Wait for page to settle (portal may auto-redirect after load)
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // Fill credentials using page.type (triggers proper input events)
+    // Check if still on login page
+    const currentUrl = page.url();
+    if (!currentUrl.includes('default.php')) {
+      await browser.close();
+      return res.json({ valid: false, error: 'Redireccion inesperada a: ' + currentUrl });
+    }
+
+    // Fill credentials using page.type
+    await page.waitForSelector('#username', { timeout: 10000 });
     await page.click('#username');
-    await page.type('#username', username, { delay: 30 });
+    await page.type('#username', username, { delay: 20 });
     await page.click('#password');
-    await page.type('#password', password, { delay: 30 });
+    await page.type('#password', password, { delay: 20 });
 
     // Capture AJAX response by intercepting fetch AND XHR inside the browser
     const ajaxResult = await page.evaluate(async () => {
