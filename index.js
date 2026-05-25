@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const https = require('https');
-const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,10 +12,6 @@ app.use(express.json());
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'Robot UAGRM (sin Puppeteer)' });
 });
-
-function md5Hash(password) {
-  return crypto.createHash('md5').update(password).digest('hex').substring(0, 8);
-}
 
 function httpsPost(urlPath, body) {
   return new Promise((resolve, reject) => {
@@ -57,11 +52,9 @@ app.post('/api/verificar', async (req, res) => {
   }
 
   try {
-    // Compute password hash (same as portal: substr(md5(password), 0, 8))
-    const passwordHash = md5Hash(password);
-
-    // POST directly to verif_est.php (no session needed — endpoint creates one)
-    const postBody = `username=${encodeURIComponent(username)}&password=${passwordHash}`;
+    // POST directly to verif_est.php — password se envia tal cual (sin hash)
+    // El portal NO hashea la contraseña, la envia en texto plano
+    const postBody = `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
     const result = await httpsPost('/estudiantes/verif_est.php', postBody);
 
     let valid = false;
@@ -82,9 +75,9 @@ app.post('/api/verificar', async (req, res) => {
       valid,
       reason,
       debug: {
-        passwordHash,
         httpStatus: result.status,
         setCookie: result.headers['set-cookie'] || '(none)',
+        passwordSent: password.substring(0, 3) + '***' + password.slice(-3),
         responseBody: (result.body || '').substring(0, 200)
       }
     });
