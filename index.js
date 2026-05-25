@@ -66,30 +66,33 @@ app.post('/api/verificar', async (req, res) => {
 
     // Fill username
     await page.click('#username');
-    await page.type('#username', username, { delay: 50 });
+    await page.type('#username', username, { delay: 30 });
 
     // Fill password
     await page.click('#password');
-    await page.type('#password', password, { delay: 50 });
+    await page.type('#password', password, { delay: 30 });
 
-    // FIX: Use Promise.all to click AND wait for navigation simultaneously
-    // This prevents "Navigating frame was detached" which happens when
-    // click fires navigation before waitForNavigation is registered
-    const [response] = await Promise.all([
-      page.waitForResponse(
-        (resp) => resp.url().includes('verif_est.php'),
-        { timeout: 15000 }
-      ).catch(() => null), // Don't crash if AJAX response isn't caught
-      page.click('#login')
-    ]);
+    // Use page-level response event to capture the AJAX response
+    // This avoids "Navigating frame was detached" from waitForResponse
+    let ajaxBody = null;
+    function onResponse(resp) {
+      if (resp.url().includes('verif_est.php')) {
+        resp.text().then(t => { ajaxBody = t; }).catch(() => {});
+      }
+    }
+    page.on('response', onResponse);
 
-    // Wait a moment for the page to process
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // Click login button
+    await page.click('#login');
 
-    // Check current URL - if redirected away from login page = success
+    // Wait for AJAX response or possible navigation redirect
+    await new Promise(resolve => setTimeout(resolve, 6000));
+
+    page.off('response', onResponse);
+
+    // Check current URL
     const currentUrl = page.url();
-    const pageTitle = await page.title();
-    const pageContent = await page.content();
+    const pageContent = await page.content().catch(() => '');
 
     const loginUrl = 'default.php';
     const errorKeywords = [
@@ -97,22 +100,26 @@ app.post('/api/verificar', async (req, res) => {
       'incorrecto', 'invalid', 'wrong', 'failed'
     ];
 
-    const isOnLoginPage = currentUrl.includes(loginUrl);
-    const hasError = errorKeywords.some(kw =>
-      pageContent.toLowerCase().includes(kw)
-    );
-
     let valid = false;
     let reason = '';
 
-    if (!isOnLoginPage) {
+    // 1. If URL changed away from login page → success (redirect)
+    if (!currentUrl.includes(loginUrl)) {
       valid = true;
       reason = 'URL cambio a: ' + currentUrl;
-    } else if (hasError) {
+    }
+    // 2. If AJAX response says "Error:" → invalid
+    else if (ajaxBody && ajaxBody.toLowerCase().includes('error')) {
+      valid = false;
+      reason = 'AJAX: ' + ajaxBody.substring(0, 80);
+    }
+    // 3. Check for error text in page
+    else if (errorKeywords.some(kw => pageContent.toLowerCase().includes(kw))) {
       valid = false;
       reason = 'Pagina de error detectada';
-    } else {
-      // Check if logged-in elements appear (name, profile, etc.)
+    }
+    // 4. Check for logged-in elements
+    else {
       const loggedInSelectors = [
         '.navbar-nav', '.profile', '.bienvenido',
         '#logout', '.user-info', '.estudiante-nombre'
@@ -126,7 +133,9 @@ app.post('/api/verificar', async (req, res) => {
         }
       }
       if (!valid) {
-        reason = 'Sigue en pagina de login sin mensaje de error claro';
+        reason = ajaxBody
+          ? 'Respuesta AJAX: ' + ajaxBody.substring(0, 80)
+          : 'Sigue en login sin mensaje de error claro';
       }
     }
 
