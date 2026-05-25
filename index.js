@@ -64,11 +64,11 @@ app.post('/api/verificar', async (req, res) => {
     // Wait for username field
     await page.waitForSelector('#username', { timeout: 10000 });
 
-    // Fill credentials via page.evaluate (avoids frame issues with type())
-    await page.evaluate((user, pass) => {
-      document.getElementById('username').value = user;
-      document.getElementById('password').value = pass;
-    }, username, password);
+    // Fill credentials using page.type (triggers proper input events)
+    await page.click('#username');
+    await page.type('#username', username, { delay: 30 });
+    await page.click('#password');
+    await page.type('#password', password, { delay: 30 });
 
     // Capture AJAX response by intercepting fetch inside the browser
     // This avoids ALL frame detachment issues — we get the body before any redirect
