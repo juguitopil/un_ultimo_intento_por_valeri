@@ -7,7 +7,6 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "cors": "^2.8.5",
-    "puppeteer-core": "^22.6.0"
+    "cors": "^2.8.5"
   }
 }

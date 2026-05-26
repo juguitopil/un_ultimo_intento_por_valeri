@@ -10,22 +10,21 @@ app.options('*', cors());
 app.use(express.json());
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'Robot UAGRM (sin Puppeteer)' });
+  res.json({ status: 'ok', service: 'Robot UAGRM v2' });
 });
 
-function httpsPost(urlPath, body) {
+const API_KEY = process.env.API_KEY || '2869b38539a19e13d44dc3e8d572f30677d9cf40d6a156b14981fb460f9343c2';
+
+function httpsPost(hostname, path, body, extraHeaders) {
   return new Promise((resolve, reject) => {
     const options = {
-      hostname: 'perfil.uagrm.edu.bo',
-      path: urlPath,
+      hostname,
+      path,
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'Content-Length': Buffer.byteLength(body),
-        'X-Requested-With': 'XMLHttpRequest',
-        'Referer': 'https://perfil.uagrm.edu.bo/estudiantes/default.php',
-        'Origin': 'https://perfil.uagrm.edu.bo',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        ...extraHeaders
       }
     };
     const req = https.request(options, (res) => {
@@ -44,6 +43,24 @@ function httpsPost(urlPath, body) {
   });
 }
 
+function httpsGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => resolve(data));
+    }).on('error', reject);
+  });
+}
+
+async function getPublicIP() {
+  try {
+    return (await httpsGet('https://api.ipify.org')).trim();
+  } catch {
+    return '0.0.0.0';
+  }
+}
+
 app.post('/api/verificar', async (req, res) => {
   const { username, password } = req.body;
 
@@ -52,48 +69,20 @@ app.post('/api/verificar', async (req, res) => {
   }
 
   try {
-    // POST directly to verif_est.php — password se envia tal cual (sin hash)
-    // El portal NO hashea la contraseña, la envia en texto plano
-    const postBody = `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
-    const result = await httpsPost('/estudiantes/verif_est.php', postBody);
+    const publicIP = await getPublicIP();
+    const postBody = `p1=${encodeURIComponent(username)}&p2=${encodeURIComponent(password)}&p3=${encodeURIComponent(publicIP)}&p4=Carnet&p5=123&p6=PERF`;
 
-    let valid = false;
-    let reason = '';
+    const result = await httpsPost('tiluchi.uagrm.edu.bo', '/api/sesion/', postBody, { apikey: API_KEY });
 
-    if (result.body && result.body.toLowerCase().includes('error')) {
-      valid = false;
-      reason = result.body.substring(0, 100);
-    } else if (result.status === 200 && result.body && result.body.length > 0) {
-      valid = true;
-      reason = 'Login aceptado';
-    } else {
-      valid = false;
-      reason = 'HTTP ' + result.status + ' Body: ' + (result.body || '').substring(0, 100);
-    }
-
-    // Extract PHPSESSID from response for auto-login
-    let sessionId = '';
-    const setCookie = result.headers['set-cookie'];
-    if (setCookie) {
-      const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
-      for (const c of cookies) {
-        const match = c.match(/PHPSESSID=([a-zA-Z0-9]+)/);
-        if (match && !match[1].includes('deleted')) {
-          sessionId = match[1];
-          break;
-        }
-      }
-    }
+    const valid = result.status === 201;
+    const reason = valid ? 'Login aceptado' : `HTTP ${result.status}: ${(result.body || '').substring(0, 200)}`;
 
     return res.json({
       valid,
       reason,
-      sessionId: valid ? sessionId : '',
       debug: {
         httpStatus: result.status,
-        setCookie: result.headers['set-cookie'] || '(none)',
-        sessionId,
-        responseBody: (result.body || '').substring(0, 200)
+        responseBody: (result.body || '').substring(0, 300)
       }
     });
 
@@ -104,6 +93,6 @@ app.post('/api/verificar', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('Robot UAGRM escuchando en puerto', PORT);
-  console.log('Sin Puppeteer — usando https directo');
+  console.log('Robot UAGRM v2 escuchando en puerto', PORT);
+  console.log('Usando tiluchi.uagrm.edu.bo/api/sesion/');
 });
