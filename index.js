@@ -6,12 +6,14 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const API_KEY = process.env.API_KEY || '2869b38539a19e13d44dc3e8d572f30677d9cf40d6a156b14981fb460f9343c2';
+
 app.use(cors({ origin: '*' }));
 app.options('*', cors());
 app.use(express.json());
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'Robot UAGRM v2' });
+  res.json({ status: 'ok', service: 'Robot UAGRM v3' });
 });
 
 function buildMultipart(fields) {
@@ -66,6 +68,23 @@ function httpsGet(url) {
   });
 }
 
+function httpsGetWithHeaders(hostname, path, headers) {
+  return new Promise((resolve, reject) => {
+    const options = { hostname, path, method: 'GET', headers };
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        body: data
+      }));
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('Timeout')); });
+    req.end();
+  });
+}
+
 async function getPublicIP() {
   try {
     return (await httpsGet('https://api.ipify.org')).trim();
@@ -92,22 +111,58 @@ app.post('/api/verificar', async (req, res) => {
       p6: 'PERF'
     });
 
-    const result = await httpsPost(
+    const loginResult = await httpsPost(
       'tiluchi.uagrm.edu.bo',
       '/api/sesion/',
       `multipart/form-data; boundary=${boundary}`,
       postBody
     );
 
-    const valid = result.status === 201;
-    const reason = valid ? 'Login aceptado' : `HTTP ${result.status}: ${(result.body || '').substring(0, 200)}`;
+    const valid = loginResult.status === 201;
+    let reason = valid ? 'Login aceptado' : `HTTP ${loginResult.status}: ${(loginResult.body || '').substring(0, 200)}`;
+    let codigo = '';
+    let nombre = '';
+    let carrera = '';
+
+    if (valid) {
+      try {
+        const sesionData = JSON.parse(loginResult.body);
+        codigo = sesionData.codigo || '';
+
+        if (codigo) {
+          const estudianteResult = await httpsGetWithHeaders(
+            'tiluchi.uagrm.edu.bo',
+            `/carnetizacion/personas/estudiante/${codigo}`,
+            {
+              'apikey': API_KEY,
+              'Origin': 'https://carnetizacion.uagrm.edu.bo',
+              'Referer': 'https://carnetizacion.uagrm.edu.bo/',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+          );
+
+          if (estudianteResult.status === 200) {
+            const estData = JSON.parse(estudianteResult.body);
+            nombre = estData.apellidos_nombres || '';
+            if (estData.carreras && estData.carreras['0']) {
+              carrera = estData.carreras['0'].nombre_carrera || '';
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Error fetching student data:', e.message);
+      }
+    }
 
     return res.json({
       valid,
       reason,
+      codigo,
+      nombre,
+      carrera,
       debug: {
-        httpStatus: result.status,
-        responseBody: (result.body || '').substring(0, 300)
+        httpStatus: loginResult.status,
+        responseBody: (loginResult.body || '').substring(0, 300)
       }
     });
 
@@ -118,6 +173,6 @@ app.post('/api/verificar', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('Robot UAGRM v2 escuchando en puerto', PORT);
-  console.log('Usando tiluchi.uagrm.edu.bo/api/sesion/ (multipart, sin apikey)');
+  console.log('Robot UAGRM v3 escuchando en puerto', PORT);
+  console.log('Usando tiluchi (multipart login + apikey estudiante)');
 });
