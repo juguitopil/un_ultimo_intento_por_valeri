@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,18 +9,24 @@ app.use(cors({ origin: '*' }));
 app.options('*', cors());
 app.use(express.json());
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'Robot UAGRM Puppeteer' });
 });
 
 async function loginConPuppeteer(username, password) {
   const browser = await puppeteer.launch({
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
     headless: true,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
+      '--single-process',
       '--no-zygote'
     ]
   });
@@ -29,32 +35,26 @@ async function loginConPuppeteer(username, password) {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 720 });
 
-    // Navegar al login de carnetizacion
     await page.goto('https://carnetizacion.uagrm.edu.bo/login', {
       waitUntil: 'networkidle2',
       timeout: 30000
     });
 
-    // Esperar que cargue la app Flutter (canvas o flutter-view)
-    await page.waitForTimeout(4000);
+    await sleep(4000);
 
-    // Hacer clic en el centro de la pantalla para enfocar el canvas Flutter
     await page.mouse.click(640, 360);
-    await page.waitForTimeout(500);
+    await sleep(500);
 
-    // Escribir credenciales mediante teclado
     await page.keyboard.type(username);
-    await page.waitForTimeout(300);
+    await sleep(300);
     await page.keyboard.press('Tab');
-    await page.waitForTimeout(300);
+    await sleep(300);
     await page.keyboard.type(password);
-    await page.waitForTimeout(300);
+    await sleep(300);
     await page.keyboard.press('Enter');
 
-    // Esperar que el login se procese
-    await page.waitForTimeout(5000);
+    await sleep(5000);
 
-    // Extraer localStorage (donde Flutter guarda la sesión)
     const storage = await page.evaluate(() => {
       const items = {};
       for (let i = 0; i < localStorage.length; i++) {
