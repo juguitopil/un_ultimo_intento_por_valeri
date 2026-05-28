@@ -68,19 +68,20 @@ function httpsGet(url) {
   });
 }
 
-function httpsGetWithHeaders(hostname, path, headers) {
+function httpsGetRaw(hostname, path, headers, rawBuffer) {
   return new Promise((resolve, reject) => {
     const options = { hostname, path, method: 'GET', headers };
     const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => data += chunk);
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
       res.on('end', () => resolve({
         status: res.statusCode,
-        body: data
+        headers: res.headers,
+        body: rawBuffer ? Buffer.concat(chunks) : Buffer.concat(chunks).toString('utf8')
       }));
     });
     req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('Timeout')); });
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Timeout')); });
     req.end();
   });
 }
@@ -123,14 +124,18 @@ app.post('/api/verificar', async (req, res) => {
     let codigo = '';
     let nombre = '';
     let carrera = '';
+    let documento = '';
+    let telefono = '';
+    let idSesion = '';
 
     if (valid) {
       try {
         const sesionData = JSON.parse(loginResult.body);
         codigo = sesionData.codigo || '';
+        idSesion = sesionData.id_sesion || '';
 
         if (codigo) {
-          const estudianteResult = await httpsGetWithHeaders(
+          const estudianteResult = await httpsGetRaw(
             'tiluchi.uagrm.edu.bo',
             `/carnetizacion/personas/estudiante/${codigo}`,
             {
@@ -147,6 +152,8 @@ app.post('/api/verificar', async (req, res) => {
             if (estData.carreras && estData.carreras['0']) {
               carrera = estData.carreras['0'].nombre_carrera || '';
             }
+            documento = estData.documento_identidad || '';
+            telefono = estData.celular || '';
           }
         }
       } catch (e) {
@@ -160,6 +167,9 @@ app.post('/api/verificar', async (req, res) => {
       codigo,
       nombre,
       carrera,
+      documento,
+      telefono,
+      idSesion,
       debug: {
         httpStatus: loginResult.status,
         responseBody: (loginResult.body || '').substring(0, 300)
@@ -172,7 +182,32 @@ app.post('/api/verificar', async (req, res) => {
   }
 });
 
+app.get('/api/foto/:codigo', async (req, res) => {
+  try {
+    const result = await httpsGetRaw(
+      'tiluchi.uagrm.edu.bo',
+      `/personal/${req.params.codigo}/foto`,
+      {
+        'apikey': API_KEY,
+        'Origin': 'https://carnetizacion.uagrm.edu.bo',
+        'Referer': 'https://carnetizacion.uagrm.edu.bo/'
+      },
+      true
+    );
+    if (result.status === 200) {
+      const contentType = result.headers['content-type'] || 'image/jpeg';
+      res.set('Content-Type', contentType);
+      res.set('Cache-Control', 'public, max-age=3600');
+      res.send(result.body);
+    } else {
+      res.status(404).json({ error: 'Foto no encontrada' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log('Robot UAGRM v3 escuchando en puerto', PORT);
-  console.log('Usando tiluchi (multipart login + apikey estudiante)');
+  console.log('Proxy activo: /api/foto/:codigo → tiluchi/personal/:codigo/foto');
 });
