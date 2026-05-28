@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const puppeteer = require('puppeteer-core');
+const https = require('https');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,73 +10,67 @@ app.use(cors({ origin: '*' }));
 app.options('*', cors());
 app.use(express.json());
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'Robot UAGRM Puppeteer' });
+  res.json({ status: 'ok', service: 'Robot UAGRM' });
 });
 
-async function loginConPuppeteer(username, password) {
-  const browser = await puppeteer.launch({
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--single-process',
-      '--no-zygote'
-    ]
-  });
+function buildMultipart(fields) {
+  const boundary = `dart-http-boundary-${crypto.randomBytes(24).toString('base64url')}`;
+  let body = '';
+  for (const [key, val] of Object.entries(fields)) {
+    body += `--${boundary}\r\n`;
+    body += `Content-Disposition: form-data; name="${key}"\r\n\r\n`;
+    body += `${val}\r\n`;
+  }
+  body += `--${boundary}--\r\n`;
+  return { body, boundary };
+}
 
-  try {
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 720 });
-
-    await page.goto('https://carnetizacion.uagrm.edu.bo/login', {
-      waitUntil: 'networkidle2',
-      timeout: 30000
-    });
-
-    await sleep(4000);
-
-    await page.mouse.click(640, 360);
-    await sleep(500);
-
-    await page.keyboard.type(username);
-    await sleep(300);
-    await page.keyboard.press('Tab');
-    await sleep(300);
-    await page.keyboard.type(password);
-    await sleep(300);
-    await page.keyboard.press('Enter');
-
-    await sleep(5000);
-
-    const storage = await page.evaluate(() => {
-      const items = {};
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        items[k] = localStorage.getItem(k);
+function httpsPost(hostname, path, contentType, body) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname,
+      path,
+      method: 'POST',
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': Buffer.byteLength(body),
+        'Origin': 'https://carnetizacion.uagrm.edu.bo',
+        'Referer': 'https://carnetizacion.uagrm.edu.bo/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
-      return items;
-    });
-
-    const tieneSesion = !!storage['FlutterSecureStorage.auth_sesion'];
-
-    return {
-      valid: tieneSesion,
-      storage,
-      url: page.url()
     };
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        headers: res.headers,
+        body: data
+      }));
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Timeout')); });
+    req.write(body);
+    req.end();
+  });
+}
 
-  } catch (err) {
-    return { valid: false, error: err.message };
-  } finally {
-    await browser.close();
+function httpsGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => resolve(data));
+    }).on('error', reject);
+  });
+}
+
+async function getPublicIP() {
+  try {
+    return (await httpsGet('https://api.ipify.org')).trim();
+  } catch {
+    return '0.0.0.0';
   }
 }
 
@@ -87,33 +82,42 @@ app.post('/api/verificar', async (req, res) => {
   }
 
   try {
-    const result = await loginConPuppeteer(username, password);
+    const publicIP = await getPublicIP();
+    const { body: postBody, boundary } = buildMultipart({
+      p1: username,
+      p2: password,
+      p3: publicIP,
+      p4: 'Carnet',
+      p5: '123',
+      p6: 'PERF'
+    });
 
-    if (result.error) {
-      return res.json({
-        valid: false,
-        reason: 'Error Puppeteer: ' + result.error,
-        debug: result
-      });
-    }
+    const result = await httpsPost(
+      'tiluchi.uagrm.edu.bo',
+      '/api/sesion/',
+      `multipart/form-data; boundary=${boundary}`,
+      postBody
+    );
+
+    const valid = result.status === 201;
+    const reason = valid ? 'Login aceptado' : `HTTP ${result.status}: ${(result.body || '').substring(0, 200)}`;
 
     return res.json({
-      valid: result.valid,
-      reason: result.valid ? 'Login exitoso en carnetizacion' : 'No se detecto sesion activa',
-      sesion: result.valid ? result.storage['FlutterSecureStorage.auth_sesion'] : '',
-      estudianteData: result.storage['flutter.estudiante_data'] || '',
+      valid,
+      reason,
       debug: {
-        url: result.url,
-        localStorageKeys: Object.keys(result.storage)
+        httpStatus: result.status,
+        responseBody: (result.body || '').substring(0, 300)
       }
     });
 
   } catch (err) {
+    console.error('Error:', err.message);
     return res.status(500).json({ valid: false, error: err.message });
   }
 });
 
 app.listen(PORT, () => {
-  console.log('Robot UAGRM Puppeteer escuchando en puerto', PORT);
-  console.log('Login contra carnetizacion.uagrm.edu.bo/login');
+  console.log('Robot UAGRM escuchando en puerto', PORT);
+  console.log('Usando tiluchi.uagrm.edu.bo/api/sesion/');
 });
