@@ -123,6 +123,8 @@ app.post('/api/verificar', async (req, res) => {
     let codigo = '';
     let nombre = '';
     let carrera = '';
+    let documento = '';
+    let telefono = '';
 
     if (valid) {
       try {
@@ -147,6 +149,8 @@ app.post('/api/verificar', async (req, res) => {
             if (estData.carreras && estData.carreras['0']) {
               carrera = estData.carreras['0'].nombre_carrera || '';
             }
+            documento = estData.documento_identidad || '';
+            telefono = estData.celular || '';
           }
         }
       } catch (e) {
@@ -160,6 +164,8 @@ app.post('/api/verificar', async (req, res) => {
       codigo,
       nombre,
       carrera,
+      documento,
+      telefono,
       debug: {
         httpStatus: loginResult.status,
         responseBody: (loginResult.body || '').substring(0, 300)
