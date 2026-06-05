@@ -132,9 +132,11 @@ app.post('/api/verificar', async (req, res) => {
       nombre   = est.apellidos_nombres || '';
       ci       = est.documento_identidad || '';
       telefonos = est.telefono || '';
-      if (est.carreras && est.carreras['0']) {
-        carrera  = est.carreras['0'].nombre_carrera || '';
-        facultad = est.carreras['0'].facultad || '';
+      // tiluchi devuelve 'origen' o '0' como clave
+      const carreraKey = est.carreras ? (est.carreras['origen'] ? 'origen' : Object.keys(est.carreras)[0]) : null;
+      if (est.carreras && carreraKey) {
+        carrera  = est.carreras[carreraKey].nombre_carrera || '';
+        facultad = est.carreras[carreraKey].facultad || '';
       }
     }
 
