@@ -56,6 +56,7 @@ function httpsGetWithHeaders(hostname, path, headers) {
       res.on('data', c => chunks.push(c));
       res.on('end', () => resolve({
         status: res.statusCode,
+        contentType: res.headers['content-type'] || '',
         body: Buffer.concat(chunks)   // Buffer para soportar binario (foto)
       }));
     });
@@ -142,17 +143,39 @@ app.post('/api/verificar', async (req, res) => {
 
     // 3. Foto del estudiante en base64
     let fotoBase64 = '';
-    try {
-      const fotoResult = await httpsGetWithHeaders(
-        'tiluchi.uagrm.edu.bo',
-        `/carnetizacion/personas/foto/${codigo}`,
-        HEADERS_BASE
-      );
-      if (fotoResult.status === 200) {
-        fotoBase64 = 'data:image/jpeg;base64,' + fotoResult.body.toString('base64');
+    // Intentar varios endpoints conocidos de foto
+    const fotoEndpoints = [
+      `/personal/${codigo}/foto`,
+      `/carnetizacion/personas/foto/${codigo}`,
+    ];
+    for (const ep of fotoEndpoints) {
+      try {
+        const fotoResult = await httpsGetWithHeaders(
+          'tiluchi.uagrm.edu.bo', ep, HEADERS_BASE
+        );
+        if (fotoResult.status === 200) {
+          const bodyStr = fotoResult.body.toString();
+          // Caso 1: respuesta JSON con data.foto (base64 string)
+          try {
+            const json = JSON.parse(bodyStr);
+            const b64 = (json.data && json.data.foto) ? json.data.foto
+                      : json.foto ? json.foto
+                      : null;
+            if (b64) {
+              fotoBase64 = 'data:image/jpeg;base64,' + b64;
+              break;
+            }
+          } catch(_) {}
+          // Caso 2: respuesta binaria directa (JPEG)
+          const ct = fotoResult.contentType || '';
+          if (ct.includes('image') || fotoResult.body[0] === 0xFF) {
+            fotoBase64 = 'data:image/jpeg;base64,' + fotoResult.body.toString('base64');
+            break;
+          }
+        }
+      } catch (e) {
+        console.log('Foto endpoint', ep, 'fallo:', e.message);
       }
-    } catch (e) {
-      console.log('Foto no disponible:', e.message);
     }
 
     return res.json({
